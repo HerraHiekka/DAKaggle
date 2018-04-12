@@ -1,0 +1,83 @@
+---
+title: "DA Kaggle Competition"
+author: "Martin Gassner & Henry Mauranen"
+date: "12 April 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libs}
+library(readr)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+```
+
+```{r imports}
+sample_sol <- read_csv("C:/Users/Henry/Desktop/DA Labs/DAKaggle/data/sample_sol.csv")
+test <- read_csv("C:/Users/Henry/Desktop/DA Labs/DAKaggle/data/test.csv")
+train <- read_csv("C:/Users/Henry/Desktop/DA Labs/DAKaggle/data/train.csv")
+```
+
+```{r overview}
+#summary(clean.train)
+#str(clean.train)
+
+clean.train <- train[train$n_non_stop_words < 1000,]
+clean.train <- clean.train[complete.cases(clean.train),]
+clean.train <- clean.train[clean.train$shares < 10000,]
+
+clean.train.melt <- melt(t(clean.train)) # Why transpose tho
+
+ggplot(clean.train.melt, aes(x=value)) + geom_density() + facet_wrap(~X1,scales="free")
+ggplot(clean.train.melt, aes(x=X1,y=value)) + geom_boxplot() + facet_wrap(~X1,scales="free")
+
+```
+
+```{r modelling}
+clean.train.fit <- lm(shares~., data=clean.train)
+
+relevant.cols <- c(6, 7, 8, 10, 11, 13, 14, 15, 16, 19, 20, 24, 25, 26, 27, 28, 32, 34, 37)
+relevant.col.names <- colnames(clean.train)[relevant.cols]
+
+lm.formula <- as.formula(paste0("shares~",paste(relevant.col.names, collapse = "+")))
+
+relevant.train.fit <- lm(lm.formula, data=clean.train)
+
+summary(relevant.train.fit)
+
+tests.est <- test
+tests.est$shares <- sample_sol$shares
+
+test.model.mat <- model.matrix(shares~.,data=tests.est)
+
+pred <- predict(relevant.train.fit, test)
+errors <- mean(sqrt((sample_sol$shares-pred)^2))
+
+pred <- data.frame(pred)
+
+pred$id <- seq(1:9911)
+
+mean(sqrt(relevant.train.fit$residuals^2))
+
+
+```
+
+```{r spm}
+train.plot.data <- train[1:2000,]
+train.plot.data$shares <- log(train.plot.data$shares)
+train.melt.shares <- melt(train.plot.data, "shares")
+ggplot(train.melt.shares, aes(x=value,y=shares)) + geom_point() + facet_wrap(~variable,scales="free")
+```
+
+```{r }
+
+```
+
+```{r }
+
+```
