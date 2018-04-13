@@ -18,9 +18,13 @@ library(dplyr)
 ```
 
 ```{r imports}
-sample_sol <- read_csv("C:/Users/Henry/Desktop/DA Labs/DAKaggle/data/sample_sol.csv")
-test <- read_csv("C:/Users/Henry/Desktop/DA Labs/DAKaggle/data/test.csv")
-train <- read_csv("C:/Users/Henry/Desktop/DA Labs/DAKaggle/data/train.csv")
+sample_sol <- read_csv("data/sample_sol.csv")
+test <- read_csv("data/test.csv")
+train <- read_csv("data/train.csv")
+
+#sample_sol <- read_csv("C:/Users/Henry/Desktop/DA Labs/DAKaggle/data/sample_sol.csv")
+#test <- read_csv("C:/Users/Henry/Desktop/DA Labs/DAKaggle/data/test.csv")
+#train <- read_csv("C:/Users/Henry/Desktop/DA Labs/DAKaggle/data/train.csv")
 ```
 
 ```{r overview}
@@ -74,10 +78,41 @@ train.melt.shares <- melt(train.plot.data, "shares")
 ggplot(train.melt.shares, aes(x=value,y=shares)) + geom_point() + facet_wrap(~variable,scales="free")
 ```
 
-```{r }
+```{r z-scores}
+zscore <- function( xs ) (xs - mean( xs ) ) / sd( xs )
+isSig <- function( zs.df, sd ) apply( zs.df, 1, function( zs ) any( zs > -sd && zs < sd ) )
 
+train.zs <- sapply( trainData, zscore )
+
+train.zs.sigs <- killSigs( trainData.zs, 1.5 )
 ```
 
-```{r }
+```{r testing distributions}
+for( n in colnames( testData ) )
+{
+  #print( n )
+  #print( var.test( trainData[ ,n ], testData[ ,n ] ) )
+  #print( t.test( trainData[ ,n ], testData[ ,n ] ) )
+}
+```
 
+```{r lin regression with lasso}
+trainData.mat <- as.matrix( trainData )
+train.zs.mat <- as.matrix( train.zs )
+testData.mat <- as.matrix( testData )
+
+fit.lasso <- glmnet( x=trainData.mat[ ,-45 ], y=trainData.mat[ ,45 ], alpha=0.85, standardize = TRUE )
+fit.lasso.cv <- cv.glmnet( x=trainData.mat[ ,-45 ], y=trainData.mat[ ,45 ], alpha=0.85 )
+fit.lasso.bestIndex <- which.min( (fit.lasso$lambda - fit.lasso.cv$lambda.min)^2 )
+fit.lasso.pred <- predict( fit.lasso.cv$glmnet.fit, trainData.mat[ ,-45 ] )
+fit.lasso.testPred <- predict( fit.lasso.cv$glmnet.fit, testData.mat )
+
+mean( abs( fit.lasso.pred[ ,fit.lasso.bestIndex ] - trainData[ ,45 ] ) )
+bestTestPred.df <- as.data.frame( cbind( 1:nrow( fit.lasso.testPred )
+                                         , fit.lasso.testPred[ ,fit.lasso.bestIndex ] ) )
+colnames( bestTestPred.df ) <- c( "id", "shares" )
+write.csv( bestTestPred.df
+           , file="lassoPred.csv"
+           , col.names = TRUE, row.names = FALSE
+           , quote=FALSE )
 ```
