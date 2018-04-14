@@ -15,11 +15,13 @@ library(readr)
 library(ggplot2)
 library(reshape2)
 library(dplyr)
+library(glmnet)
 ```
 
 ```{r imports}
 sample_sol <- read_csv("data/sample_sol.csv")
 test <- read_csv("data/test.csv")
+test[4461, ] <- c( 9,851,0.533757961,0.999999998,0.678776289,30,7,0,21,4.498237368,8,0,0,1,0,0,0,3196.547705,11600,6663.361208,1.59,9300,5900.3975,1,0,0,0,0,0,0,0,0.530478253,0.025004495,0.025000075,0.394516832,0.025000345,0.606550179,0.218324373,0.059929495,0.015276146,0.796875,0.203125,0,0 )
 train <- read_csv("data/train.csv")
 
 #sample_sol <- read_csv("C:/Users/Henry/Desktop/DA Labs/DAKaggle/data/sample_sol.csv")
@@ -30,6 +32,7 @@ train <- read_csv("data/train.csv")
 ```{r overview}
 #summary(clean.train)
 #str(clean.train)
+train <- train[ complete.cases( train ), ]
 
 clean.train <- train[train$n_non_stop_words < 1000,]
 clean.train <- clean.train[complete.cases(clean.train),]
@@ -79,12 +82,23 @@ ggplot(train.melt.shares, aes(x=value,y=shares)) + geom_point() + facet_wrap(~va
 ```
 
 ```{r z-scores}
+# compute the z scores of a vector
 zscore <- function( xs ) (xs - mean( xs ) ) / sd( xs )
-isSig <- function( zs.df, sd ) apply( zs.df, 1, function( zs ) any( zs > -sd && zs < sd ) )
+# compute whether each entry is within sd times the standard deviation around the mean
+isSig <- function( zs.df, sd ) apply( zs.df, 1, function( zs ) all( zs > -sd && zs < sd ) )
 
-train.zs <- sapply( trainData, zscore )
+train.zs <- data.frame( sapply( train, zscore ) )
+train.zs.sigs <- isSig( train.zs, 1.5 )
 
-train.zs.sigs <- killSigs( trainData.zs, 1.5 )
+test.zs <- data.frame( sapply( test, zscore ) )
+```
+
+```{r spm}
+#train.plot.data <- train[1:2000,]
+#train.plot.data$shares <- log(train.plot.data$shares )
+train.zs.melt <- melt( train.zs[ train.zs.sigs, ] )
+train.zs.melt$value <- log( train.zs.melt$value - min( train.zs.melt$value ) + 1 )
+ggplot( train.zs.melt, aes(x=value)) + geom_density() + facet_wrap(~variable,scales="free")
 ```
 
 ```{r testing distributions}
@@ -97,22 +111,139 @@ for( n in colnames( testData ) )
 ```
 
 ```{r lin regression with lasso}
-trainData.mat <- as.matrix( trainData )
+train.mat <- as.matrix( train[ complete.cases( train ), ] )
+train.sig.mat <- as.matrix( train[ complete.cases( train ) & isSig( train.zs, 1.5 ), ] )
 train.zs.mat <- as.matrix( train.zs )
-testData.mat <- as.matrix( testData )
+test.mat <- as.matrix( test )
 
-fit.lasso <- glmnet( x=trainData.mat[ ,-45 ], y=trainData.mat[ ,45 ], alpha=0.85, standardize = TRUE )
-fit.lasso.cv <- cv.glmnet( x=trainData.mat[ ,-45 ], y=trainData.mat[ ,45 ], alpha=0.85 )
+#full training data
+#fit.lasso <- glmnet( x=train.mat[ ,-45 ], y=train.mat[ ,45 ], alpha=0.85, standardize = TRUE )
+#fit.lasso.cv <- cv.glmnet( x=train.mat[ ,-45 ], y=train.mat[ ,45 ], alpha=0.85 )
+
+# non-outlier training data
+fit.lasso <- glmnet( x=train.sig.mat[ ,-45 ], y=train.sig.mat[ ,45 ], alpha=0.85, standardize = TRUE )
+fit.lasso.cv <- cv.glmnet( x=train.sig.mat[ ,-45 ], y=train.sig.mat[ ,45 ]
+                           , alpha=0.85, standardize=TRUE )
+
 fit.lasso.bestIndex <- which.min( (fit.lasso$lambda - fit.lasso.cv$lambda.min)^2 )
-fit.lasso.pred <- predict( fit.lasso.cv$glmnet.fit, trainData.mat[ ,-45 ] )
-fit.lasso.testPred <- predict( fit.lasso.cv$glmnet.fit, testData.mat )
+fit.lasso.pred <- predict( fit.lasso.cv$glmnet.fit, train.mat[ ,-45 ] )
+fit.lasso.testPred <- predict( fit.lasso.cv$glmnet.fit, test.mat )
 
-mean( abs( fit.lasso.pred[ ,fit.lasso.bestIndex ] - trainData[ ,45 ] ) )
+# mean did not work
+sum( abs( fit.lasso.pred[ ,fit.lasso.bestIndex ] - train[ ,45 ] ) ) / nrow( fit.lasso.pred )
+
+fit.lasso.testPred[ ,fit.lasso.bestIndex ][ fit.lasso.testPred[ ,fit.lasso.bestIndex] < 0 ] <- 0
 bestTestPred.df <- as.data.frame( cbind( 1:nrow( fit.lasso.testPred )
                                          , fit.lasso.testPred[ ,fit.lasso.bestIndex ] ) )
 colnames( bestTestPred.df ) <- c( "id", "shares" )
 write.csv( bestTestPred.df
            , file="lassoPred.csv"
+           , col.names = TRUE, row.names = FALSE
+           , quote=FALSE )
+```
+
+```{r lin regression with lasso}
+add2oInters <- function( ns1, ns2, df ){
+  for( n1 in ns1 ){
+    for( n2 in ns2){
+      df[ ,paste( n1, n2, sep=' & ' ) ] <- df[ ,n1 ] * df[ ,n2 ]
+    }
+  }
+  return( df )
+}
+
+#train.csinters <- add2oInters( c( "average_token_length"))
+
+train.zs.mat <- as.matrix( train.zs )
+train.csinters <- cbind( train
+                         , train$average_token_length * train$global_rate_positive_words
+                         , train$average_token_length * train$global_subjectivity
+                         , train$num_imgs * train$num_videos
+                         , train$data_channel_is_socmed * train$global_sentiment_polarity
+                         , train$data_channel_is_socmed * train$global_subjectivity
+                         , train$data_channel_is_entertainment * train$global_subjectivity
+                         , train$data_channel_is_lifestyle * train$global_subjectivity
+                         , train$kw_avg_avg * train$topic_04
+                         , train$self_reference_min_shares * train$weekday_is_monday )
+train.csinters.mat <- as.matrix( train.csinters )
+train.csinters.sig.mat <- as.matrix( train.csinters[ isSig( train.zs.mat, 1.5 ), ] )
+
+test.csinters <- cbind( test
+                         , test$average_token_length * test$global_rate_positive_words
+                         , test$average_token_length * test$global_subjectivity
+                         , test$num_imgs * test$num_videos
+                         , test$data_channel_is_socmed * test$global_sentiment_polarity
+                         , test$data_channel_is_socmed * test$global_subjectivity
+                         , test$data_channel_is_entertainment * test$global_subjectivity
+                         , test$data_channel_is_lifestyle * test$global_subjectivity
+                         , test$kw_avg_avg * test$topic_04
+                         , test$self_reference_min_shares * test$weekday_is_monday )
+test.csinters.mat <- as.matrix( test.csinters )
+
+#full training data
+#fit.lasso <- glmnet( x=train.mat[ ,-45 ], y=train.mat[ ,45 ], alpha=0.85, standardize = TRUE )
+#fit.lasso.cv <- cv.glmnet( x=train.mat[ ,-45 ], y=train.mat[ ,45 ], alpha=0.85 )
+
+# non-outlier training data
+fit.lasso.csinters <- glmnet( x=train.csinters.mat[ ,-45 ], y=train.csinters.mat[ ,45 ], alpha=0.85, standardize = TRUE )
+fit.lasso.csinters.cv <- cv.glmnet( x=train.csinters.mat[ ,-45 ], y=train.csinters.mat[ ,45 ]
+                                    , alpha=0.85 )
+
+
+fit.lasso.csinters.bestIndex <- which.min( (fit.lasso.csinters$lambda - fit.lasso.csinters.cv$lambda.min)^2 )
+fit.lasso.csinters.pred <- predict( fit.lasso.csinters.cv$glmnet.fit, train.csinters.mat[ ,-45 ] )
+fit.lasso.csinters.testPred <- predict( fit.lasso.csinters.cv$glmnet.fit, test.csinters.mat )
+
+# mean did not work
+sum( abs( fit.lasso.pred[ ,fit.lasso.csinters.bestIndex ] - train[ ,45 ] ) ) / nrow( fit.lasso.csinters.pred )
+
+fit.lasso.csinters.testPred[ ,fit.lasso.csinters.bestIndex ][ fit.lasso.csinters.testPred[ ,fit.lasso.csinters.bestIndex] < 0 ] <- 0
+bestTestPred.csinters.df <- as.data.frame( cbind( 1:nrow( fit.lasso.csinters.testPred )
+                                         , fit.lasso.csinters.testPred[ ,fit.lasso.csinters.bestIndex ] ) )
+colnames( bestTestPred.csinters.df ) <- c( "id", "shares" )
+write.csv( bestTestPred.csinters.df
+           , file="lassoPredInters.csv"
+           , col.names = TRUE, row.names = FALSE
+           , quote=FALSE )
+```
+
+
+```{r model for best predictors + hierarchy}
+fit.magic <- lm( shares~kw_avg_avg+topic_04+self_reference_min_shares+weekday_is_monday+kw_avg_avg*topic_04+self_reference_min_shares*weekday_is_monday, train[ isSig( train.zs, 1.5 ), ] )
+```
+
+```{r k nearest neighbors improvised}
+eudist <- function( x, y ) sum( (x - y)^2 )
+
+minMaxNorm <- function( xs ){
+  min <- min( xs )
+  max <- max( xs )
+  (xs - min) / (max - min)
+}
+
+train.minmax <- as.data.frame( apply( train, 2, minMaxNorm ) )
+test.minmax <- as.data.frame( apply( test, 2, minMaxNorm ) )
+
+#pred.knn <- knn3( shares~., train )
+knnx <- function( inst, data, sampleN, neighsN, distfun, attrib ){
+  sams <- sample_n( data[ ,!(colnames( train ) %in% c( attrib ) ) ], size=sampleN )
+  dists <- apply( sams, 1,function( r ) distfun( inst, r ) )
+  topN <- order( dists, decreasing=FALSE )[1 : neighsN ]
+  #return( topN )
+  return( apply( as_tibble( data[ topN, attrib ] ), 2, mean ) )
+}
+
+shares.mu <- mean( train$shares )
+shares.sd <- sd( train$shares )
+shares.min <- min( train$shares )
+shares.max <- max( train$shares )
+
+pred.knn <- apply( test.minmax, 1, function( inst ) knnx( inst, train.minmax, 10000, 10, eudist, "shares" ) )
+pred.knn.df <- data.frame( cbind( 1:nrow( test )
+                                  , pred.knn * (shares.max - shares.min) + shares.min ) )
+colnames( pred.knn.df ) <- c( "id", "shares" )
+write.csv( pred.knn.df
+           , file="knn.csv"
            , col.names = TRUE, row.names = FALSE
            , quote=FALSE )
 ```
